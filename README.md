@@ -5,5 +5,5 @@ Prerequisites:
 
 Building:
 ```sh
-env WASM_INTERFACE_TYPES=1 wasm-pack build
+rm -rf pkg; env WASM_INTERFACE_TYPES=1 wasm-pack build --release
 ```
