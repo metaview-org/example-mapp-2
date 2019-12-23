@@ -54,8 +54,31 @@ macro_rules! dbg {
     };
 }
 
-const MODEL_MAIN_BYTES: &'static [u8] = include_bytes!("../../ammolite/resources/DamagedHelmet/glTF-Binary/DamagedHelmet.glb");
+// const MODEL_MAIN_BYTES: &'static [u8] = include_bytes!(env!("MODEL"));
+// const MODEL_MAIN_BYTES: &'static [u8] = include_bytes!("/home/limeth/Downloads/meteor-crater-arizona/source/Meteor Crater.glb");
+const MODEL_BUTTON_PREVIOUS_BYTES: &'static [u8] = include_bytes!("/home/limeth/Documents/School/mvr/metaview models/button_previous.glb");
+const MODEL_BUTTON_NEXT_BYTES: &'static [u8] = include_bytes!("/home/limeth/Documents/School/mvr/metaview models/button_next.glb");
+const MODELS_MAIN_LEN: usize = 4;
+const MODELS_MAIN_BYTES_SCALE: [(&'static [u8], f32); MODELS_MAIN_LEN] = [
+    (include_bytes!("../../ammolite/resources/DamagedHelmet/glTF-Binary/DamagedHelmet.glb"), 1.0),
+    (include_bytes!("../../ammolite/resources/Corset/glTF-Binary/Corset.glb"), 40.0),
+    (include_bytes!("../../ammolite/resources/AntiqueCamera/glTF-Binary/AntiqueCamera.glb"), 0.1),
+    (include_bytes!("../../ammolite/resources/WaterBottle/glTF-Binary/WaterBottle.glb"), 5.0),
+];
 const MODEL_MARKER_BYTES: &'static [u8] = include_bytes!("../../ammolite/resources/sphere_1m_radius.glb");
+const SELECTION_DELAY: f32 = 1.0;
+
+fn construct_model_matrix(scale: f32, translation: &Vec3, rotation: &Vec3) -> Mat4 {
+    Mat4::translation(translation)
+        * Mat4::rotation_roll(rotation[2])
+        * Mat4::rotation_yaw(rotation[1])
+        * Mat4::rotation_pitch(rotation[0])
+        * Mat4::scale(scale)
+}
+
+fn duration_to_seconds(duration: Duration) -> f32 {
+    (duration.as_secs() as f64 + duration.subsec_nanos() as f64 / 1_000_000_000f64) as f32
+}
 
 #[derive(Debug)]
 pub struct Orientation {
@@ -68,19 +91,31 @@ pub struct RayTracingTask {
     total_distance: f32,
 }
 
+pub struct Selection {
+    entity: Entity,
+    since: Duration,
+}
+
 #[mapp]
 pub struct ExampleMapp {
+    elapsed: Duration,
     io: IO,
     state: Vec<String>,
     command_id_next: usize,
     commands: VecDeque<Command>,
     view_orientations: Option<Vec<Option<Orientation>>>,
     root_entity: Option<Entity>,
-    model_main: Option<Model>,
+    models_main: Vec<Option<Model>>,
     model_marker: Option<Model>,
+    model_button_previous: Option<Model>,
+    model_button_next: Option<Model>,
     entity_main: Option<Entity>,
     entity_marker: Option<Entity>,
+    entity_button_previous: Option<Entity>,
+    entity_button_next: Option<Entity>,
     ray_tracing_task: Option<RayTracingTask>,
+    current_main_model_index: usize,
+    current_selection: Option<Selection>,
 }
 
 impl ExampleMapp {
@@ -91,30 +126,69 @@ impl ExampleMapp {
         });
         self.command_id_next += 1;
     }
+
+    fn change_main_model_index(&mut self, new_index: usize) {
+        self.current_main_model_index = new_index;
+        self.cmd(CommandKind::EntityModelSet {
+            entity: self.entity_main.unwrap(),
+            model: self.models_main[self.current_main_model_index],
+        });
+    }
+
+    fn change_main_model_next(&mut self) {
+        let new_index = (self.current_main_model_index + 1) % MODELS_MAIN_LEN;
+        self.change_main_model_index(new_index);
+    }
+
+    fn change_main_model_previous(&mut self) {
+        let new_index = if self.current_main_model_index == 0 {
+            MODELS_MAIN_LEN - 1
+        } else {
+            self.current_main_model_index - 1
+        };
+        self.change_main_model_index(new_index);
+    }
 }
 
 impl Mapp for ExampleMapp {
     fn new() -> Self {
         let mut result = Self {
+            elapsed: Default::default(),
             io: Default::default(),
             state: Vec::new(),
             command_id_next: 0,
             commands: VecDeque::new(),
             view_orientations: None,
             root_entity: None,
-            model_main: None,
+            models_main: vec![None; MODELS_MAIN_LEN],
             model_marker: None,
+            model_button_previous: None,
+            model_button_next: None,
             entity_main: None,
             entity_marker: None,
+            entity_button_previous: None,
+            entity_button_next: None,
             ray_tracing_task: None,
+            current_main_model_index: 0,
+            current_selection: None,
         };
         result.cmd(CommandKind::EntityRootGet);
-        result.cmd(CommandKind::ModelCreate {
-            data: (&MODEL_MAIN_BYTES[..]).into(),
-        });
+        for (model_bytes, _) in &MODELS_MAIN_BYTES_SCALE {
+            result.cmd(CommandKind::ModelCreate {
+                data: Vec::from(*model_bytes),
+            });
+        }
         result.cmd(CommandKind::ModelCreate {
             data: (&MODEL_MARKER_BYTES[..]).into(),
         });
+        result.cmd(CommandKind::ModelCreate {
+            data: (&MODEL_BUTTON_PREVIOUS_BYTES[..]).into(),
+        });
+        result.cmd(CommandKind::ModelCreate {
+            data: (&MODEL_BUTTON_NEXT_BYTES[..]).into(),
+        });
+        result.cmd(CommandKind::EntityCreate);
+        result.cmd(CommandKind::EntityCreate);
         result.cmd(CommandKind::EntityCreate);
         result.cmd(CommandKind::EntityCreate);
         result
@@ -126,25 +200,20 @@ impl Mapp for ExampleMapp {
     }
 
     fn update(&mut self, elapsed: Duration) {
-        fn construct_model_matrix(scale: f32, translation: &Vec3, rotation: &Vec3) -> Mat4 {
-            Mat4::translation(translation)
-                * Mat4::rotation_roll(rotation[2])
-                * Mat4::rotation_yaw(rotation[1])
-                * Mat4::rotation_pitch(rotation[0])
-                * Mat4::scale(scale)
-        }
+        self.elapsed = elapsed;
 
         if self.entity_main.is_none() {
             return;
         }
 
-        let secs_elapsed = (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000f64) as f32;
+        let secs_elapsed = duration_to_seconds(elapsed);
         // dbg!(self, elapsed);
         // dbg!(self, secs_elapsed);
+        let anim_speed = 0.2;
         let transform = construct_model_matrix(
-            1.0,
+            MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1,
             &[0.0, 0.0, 2.0].into(),
-            &[secs_elapsed.sin() * 1.0, std::f32::consts::PI + secs_elapsed.cos() * 3.0 / 2.0, 0.0].into(),
+            &[(secs_elapsed * anim_speed).sin() * 1.0, std::f32::consts::PI + (secs_elapsed * anim_speed).cos() * 3.0 / 2.0, 0.0].into(),
         );
 
         self.cmd(CommandKind::EntityTransformSet {
@@ -165,21 +234,43 @@ impl Mapp for ExampleMapp {
                 self.root_entity = Some(root_entity);
             },
             CommandResponseKind::ModelCreate { model } => {
-                if self.model_main.is_none() {
-                    self.model_main = Some(model);
+                let model_ref = if let Some(model_main) = self.models_main.iter_mut().find(|model_main| model_main.is_none()) {
+                    model_main
+                } else if self.model_marker.is_none() {
+                    &mut self.model_marker
+                } else if self.model_button_previous.is_none() {
+                    &mut self.model_button_previous
+                } else if self.model_button_next.is_none() {
+                    &mut self.model_button_next
                 } else {
-                    self.model_marker = Some(model);
-                }
+                    panic!("Too many ModelCreate commands sent.");
+                };
+
+                *model_ref = Some(model);
             },
             CommandResponseKind::EntityCreate { entity } => {
-                let model_selector = {
-                    let (entity_selector, model_selector) = if self.entity_main.is_none() {
-                        (&mut self.entity_main, self.model_main)
+                let (model_selector, transform) = {
+                    let (entity_selector, model_selector, transform) = if self.entity_main.is_none() {
+                        (&mut self.entity_main, self.models_main[self.current_main_model_index], Mat4::scale(MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1))
+                    } else if self.entity_marker.is_none() {
+                        (&mut self.entity_marker, self.model_marker, Mat4::identity())
+                    } else if self.entity_button_previous.is_none() {
+                        (
+                            &mut self.entity_button_previous,
+                            self.model_button_previous,
+                            construct_model_matrix(0.2, &Vec3([ 1.0, 0.0, 1.0]), &Vec3([0.0, std::f32::consts::PI, 0.0])),
+                        )
+                    } else if self.entity_button_next.is_none() {
+                        (
+                            &mut self.entity_button_next,
+                            self.model_button_next,
+                            construct_model_matrix(0.2, &Vec3([-1.0, 0.0, 1.0]), &Vec3([0.0, std::f32::consts::PI, 0.0])),
+                        )
                     } else {
-                        (&mut self.entity_marker, self.model_marker)
+                        panic!("Too many EntityCreate commands sent.");
                     };
                     *entity_selector = Some(entity);
-                    model_selector
+                    (model_selector, transform)
                 };
                 self.cmd(CommandKind::EntityParentSet {
                     entity: entity,
@@ -191,7 +282,7 @@ impl Mapp for ExampleMapp {
                 });
                 self.cmd(CommandKind::EntityTransformSet {
                     entity: entity,
-                    transform: Some(Mat4::identity()),
+                    transform: Some(transform),
                 });
             },
             CommandResponseKind::GetViewOrientation { views_per_medium } => {
@@ -254,7 +345,7 @@ impl Mapp for ExampleMapp {
                     // Continue ray tracing from current intersection, if marker hit
                     if Some(closest_intersection.entity) == self.entity_marker {
                         self.cmd(CommandKind::RayTrace {
-                            origin: closest_intersection.position + (&direction * (8.0 * std::f32::EPSILON)),
+                            origin: closest_intersection.position + (&direction * (32.0 * std::f32::EPSILON)),
                             direction: direction.clone(),
                         });
 
@@ -263,7 +354,9 @@ impl Mapp for ExampleMapp {
                             total_distance,
                         });
                     } else {
-                        let scale = 0.02 * total_distance;
+                        let scale = 0.02 * total_distance * self.current_selection.as_ref().map(|selection| {
+                            1.0 + duration_to_seconds(self.elapsed - selection.since)
+                        }).unwrap_or(1.0);
                         let transform = Mat4::translation(&closest_intersection.position)
                             * Mat4::scale(scale);
 
@@ -277,8 +370,33 @@ impl Mapp for ExampleMapp {
                         });
 
                         self.ray_tracing_task = None;
+
+                        if Some(closest_intersection.entity) == self.entity_button_previous
+                            || Some(closest_intersection.entity) == self.entity_button_next {
+                            if self.current_selection.is_none() {
+                                self.current_selection = Some(Selection {
+                                    entity: closest_intersection.entity,
+                                    since: self.elapsed,
+                                })
+                            }
+                        }
+
+                        if self.current_selection.as_ref().map(|selection| selection.entity) == Some(closest_intersection.entity) {
+                            if self.elapsed - self.current_selection.as_ref().unwrap().since >= Duration::from_secs_f32(SELECTION_DELAY) {
+                                if Some(closest_intersection.entity) == self.entity_button_previous {
+                                    self.change_main_model_previous();
+                                } else if Some(closest_intersection.entity) == self.entity_button_next {
+                                    self.change_main_model_next();
+                                }
+
+                                self.current_selection = None;
+                            }
+                        } else {
+                            self.current_selection = None;
+                        }
                     }
                 } else {
+                    self.current_selection = None;
                     self.cmd(CommandKind::EntityModelSet {
                         entity: self.entity_marker.unwrap(),
                         model: None,
