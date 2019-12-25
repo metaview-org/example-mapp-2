@@ -175,7 +175,7 @@ impl Mapp for ExampleMapp {
         result.cmd(CommandKind::EntityRootGet);
         for (model_bytes, _) in &MODELS_MAIN_BYTES_SCALE {
             result.cmd(CommandKind::ModelCreate {
-                data: Vec::from(*model_bytes),
+                data: model_bytes.into(),
             });
         }
         result.cmd(CommandKind::ModelCreate {
