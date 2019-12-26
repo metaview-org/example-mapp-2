@@ -58,15 +58,20 @@ macro_rules! dbg {
 // const MODEL_MAIN_BYTES: &'static [u8] = include_bytes!("/home/limeth/Downloads/meteor-crater-arizona/source/Meteor Crater.glb");
 const MODEL_BUTTON_PREVIOUS_BYTES: &'static [u8] = include_bytes!("/home/limeth/Documents/School/mvr/metaview models/button_previous.glb");
 const MODEL_BUTTON_NEXT_BYTES: &'static [u8] = include_bytes!("/home/limeth/Documents/School/mvr/metaview models/button_next.glb");
-const MODELS_MAIN_LEN: usize = 4;
+// TODO: Use a procedural macro to output include_bytes! macros for every model
+// in the resources directory (if a feature is used/release build; otherwise it
+// would slow down linting)
+const MODELS_MAIN_LEN: usize = 5;
 const MODELS_MAIN_BYTES_SCALE: [(&'static [u8], f32); MODELS_MAIN_LEN] = [
     (include_bytes!("../../ammolite/resources/DamagedHelmet/glTF-Binary/DamagedHelmet.glb"), 1.0),
     (include_bytes!("../../ammolite/resources/Corset/glTF-Binary/Corset.glb"), 40.0),
     (include_bytes!("../../ammolite/resources/AntiqueCamera/glTF-Binary/AntiqueCamera.glb"), 0.1),
     (include_bytes!("../../ammolite/resources/WaterBottle/glTF-Binary/WaterBottle.glb"), 5.0),
+    (include_bytes!("/home/limeth/Documents/School/mvr/team07/mvr_3D_models/hlusijak/laser/zaba.glb"), 0.01),
 ];
 const MODEL_MARKER_BYTES: &'static [u8] = include_bytes!("../../ammolite/resources/sphere_1m_radius.glb");
 const SELECTION_DELAY: f32 = 1.0;
+const ENTITY_COUNT: usize = 20;
 
 fn construct_model_matrix(scale: f32, translation: &Vec3, rotation: &Vec3) -> Mat4 {
     Mat4::translation(translation)
@@ -105,11 +110,11 @@ pub struct ExampleMapp {
     commands: VecDeque<Command>,
     view_orientations: Option<Vec<Option<Orientation>>>,
     root_entity: Option<Entity>,
-    models_main: Vec<Option<Model>>,
+    models_main: [Option<Model>; MODELS_MAIN_LEN],
     model_marker: Option<Model>,
     model_button_previous: Option<Model>,
     model_button_next: Option<Model>,
-    entity_main: Option<Entity>,
+    entities_main: [Option<Entity>; ENTITY_COUNT],
     entity_marker: Option<Entity>,
     entity_button_previous: Option<Entity>,
     entity_button_next: Option<Entity>,
@@ -129,10 +134,12 @@ impl ExampleMapp {
 
     fn change_main_model_index(&mut self, new_index: usize) {
         self.current_main_model_index = new_index;
-        self.cmd(CommandKind::EntityModelSet {
-            entity: self.entity_main.unwrap(),
-            model: self.models_main[self.current_main_model_index],
-        });
+        for entity in self.entities_main.clone().iter() {
+            self.cmd(CommandKind::EntityModelSet {
+                entity: entity.unwrap(),
+                model: self.models_main[self.current_main_model_index],
+            });
+        }
     }
 
     fn change_main_model_next(&mut self) {
@@ -160,11 +167,11 @@ impl Mapp for ExampleMapp {
             commands: VecDeque::new(),
             view_orientations: None,
             root_entity: None,
-            models_main: vec![None; MODELS_MAIN_LEN],
+            models_main: [None; MODELS_MAIN_LEN],
             model_marker: None,
             model_button_previous: None,
             model_button_next: None,
-            entity_main: None,
+            entities_main: [None; ENTITY_COUNT],
             entity_marker: None,
             entity_button_previous: None,
             entity_button_next: None,
@@ -187,7 +194,9 @@ impl Mapp for ExampleMapp {
         result.cmd(CommandKind::ModelCreate {
             data: (&MODEL_BUTTON_NEXT_BYTES[..]).into(),
         });
-        result.cmd(CommandKind::EntityCreate);
+        for _ in 0..ENTITY_COUNT {
+            result.cmd(CommandKind::EntityCreate);
+        }
         result.cmd(CommandKind::EntityCreate);
         result.cmd(CommandKind::EntityCreate);
         result.cmd(CommandKind::EntityCreate);
@@ -202,24 +211,27 @@ impl Mapp for ExampleMapp {
     fn update(&mut self, elapsed: Duration) {
         self.elapsed = elapsed;
 
-        if self.entity_main.is_none() {
-            return;
-        }
-
         let secs_elapsed = duration_to_seconds(elapsed);
         // dbg!(self, elapsed);
         // dbg!(self, secs_elapsed);
         let anim_speed = 0.2;
-        let transform = construct_model_matrix(
-            MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1,
-            &[0.0, 0.0, 2.0].into(),
-            &[(secs_elapsed * anim_speed).sin() * 1.0, std::f32::consts::PI + (secs_elapsed * anim_speed).cos() * 3.0 / 2.0, 0.0].into(),
-        );
 
-        self.cmd(CommandKind::EntityTransformSet {
-            entity: self.entity_main.unwrap(),
-            transform: Some(transform),
-        });
+        for (index, entity) in self.entities_main.clone().iter().enumerate() {
+            if entity.is_none() {
+                return;
+            }
+
+            let transform = construct_model_matrix(
+                MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1,
+                &[0.0, 0.0, 2.0 + 1.0 * index as f32].into(),
+                &[(secs_elapsed * anim_speed).sin() * 1.0, std::f32::consts::PI + (secs_elapsed * anim_speed).cos() * 3.0 / 2.0, 0.0].into(),
+            );
+
+            self.cmd(CommandKind::EntityTransformSet {
+                entity: entity.unwrap(),
+                transform: Some(transform),
+            });
+        }
         self.cmd(CommandKind::GetViewOrientation {});
     }
 
@@ -250,10 +262,10 @@ impl Mapp for ExampleMapp {
             },
             CommandResponseKind::EntityCreate { entity } => {
                 let (model_selector, transform) = {
-                    let (entity_selector, model_selector, transform) = if self.entity_main.is_none() {
-                        (&mut self.entity_main, self.models_main[self.current_main_model_index], Mat4::scale(MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1))
+                    let (entity_selector, model_selector, transform) = if let Some(index) = self.entities_main.iter().position(|entity| entity.is_none()) {
+                        (&mut self.entities_main[index], self.models_main[self.current_main_model_index], Mat4::scale(MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1))
                     } else if self.entity_marker.is_none() {
-                        (&mut self.entity_marker, self.model_marker, Mat4::identity())
+                        (&mut self.entity_marker, self.model_marker, Mat4::IDENTITY)
                     } else if self.entity_button_previous.is_none() {
                         (
                             &mut self.entity_button_previous,
@@ -292,7 +304,7 @@ impl Mapp for ExampleMapp {
                     .map(|views|
                         views.map(|views| {
                             let views_len = views.len();
-                            let mut average_view = Mat4::zero();
+                            let mut average_view = Mat4::ZERO;
 
                             for view in views {
                                 average_view = average_view + view.pose;
