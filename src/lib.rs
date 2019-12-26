@@ -1,11 +1,10 @@
 use std::time::Duration;
-use std::io::Read;
 use std::collections::VecDeque;
 use ammolite_math::*;
 use wasm_bindgen::prelude::*;
-use lazy_static::lazy_static;
 use mlib::*;
 
+#[allow(unused)]
 macro_rules! print {
     ($mapp:ident, $($tt:tt)*) => {
         let formatted = format!($($tt)*);
@@ -13,6 +12,7 @@ macro_rules! print {
     }
 }
 
+#[allow(unused)]
 macro_rules! println {
     ($mapp:ident, $($tt:tt)*) => {
         print!($mapp, $($tt)*);
@@ -20,6 +20,7 @@ macro_rules! println {
     }
 }
 
+#[allow(unused)]
 macro_rules! eprint {
     ($mapp:ident, $($tt:tt)*) => {
         let formatted = format!($($tt)*);
@@ -27,6 +28,7 @@ macro_rules! eprint {
     }
 }
 
+#[allow(unused)]
 macro_rules! eprintln {
     ($mapp:ident, $($tt:tt)*) => {
         eprint!($mapp, $($tt)*);
@@ -35,6 +37,7 @@ macro_rules! eprintln {
 }
 
 // Implementation from https://doc.rust-lang.org/std/macro.dbg.html
+#[allow(unused)]
 macro_rules! dbg {
     ($mapp:ident, ) => {
         eprintln!($mapp, "[{}:{}]", file!(), line!());
@@ -61,16 +64,17 @@ const MODEL_BUTTON_NEXT_BYTES: &'static [u8] = include_bytes!("/home/limeth/Docu
 // TODO: Use a procedural macro to output include_bytes! macros for every model
 // in the resources directory (if a feature is used/release build; otherwise it
 // would slow down linting)
-const MODELS_MAIN_LEN: usize = 5;
+const MODELS_MAIN_LEN: usize = 1;
 const MODELS_MAIN_BYTES_SCALE: [(&'static [u8], f32); MODELS_MAIN_LEN] = [
-    (include_bytes!("../../ammolite/resources/DamagedHelmet/glTF-Binary/DamagedHelmet.glb"), 1.0),
-    (include_bytes!("../../ammolite/resources/Corset/glTF-Binary/Corset.glb"), 40.0),
-    (include_bytes!("../../ammolite/resources/AntiqueCamera/glTF-Binary/AntiqueCamera.glb"), 0.1),
+    // (include_bytes!("../../ammolite/resources/DamagedHelmet/glTF-Binary/DamagedHelmet.glb"), 1.0),
+    // (include_bytes!("../../ammolite/resources/Corset/glTF-Binary/Corset.glb"), 40.0),
+    // (include_bytes!("../../ammolite/resources/AntiqueCamera/glTF-Binary/AntiqueCamera.glb"), 0.1),
     (include_bytes!("../../ammolite/resources/WaterBottle/glTF-Binary/WaterBottle.glb"), 5.0),
-    (include_bytes!("/home/limeth/Documents/School/mvr/team07/mvr_3D_models/hlusijak/laser/zaba.glb"), 0.01),
+    // (include_bytes!("/home/limeth/Documents/School/mvr/team07/mvr_3D_models/hlusijak/laser/zaba.glb"), 0.01),
 ];
 const MODEL_MARKER_BYTES: &'static [u8] = include_bytes!("../../ammolite/resources/sphere_1m_radius.glb");
 const SELECTION_DELAY: f32 = 1.0;
+const ANIMATION_SPEED: f32 = 0.0;
 const ENTITY_COUNT: usize = 20;
 
 fn construct_model_matrix(scale: f32, translation: &Vec3, rotation: &Vec3) -> Mat4 {
@@ -214,8 +218,6 @@ impl Mapp for ExampleMapp {
         let secs_elapsed = duration_to_seconds(elapsed);
         // dbg!(self, elapsed);
         // dbg!(self, secs_elapsed);
-        let anim_speed = 0.2;
-
         for (index, entity) in self.entities_main.clone().iter().enumerate() {
             if entity.is_none() {
                 return;
@@ -224,7 +226,7 @@ impl Mapp for ExampleMapp {
             let transform = construct_model_matrix(
                 MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1,
                 &[0.0, 0.0, 2.0 + 1.0 * index as f32].into(),
-                &[(secs_elapsed * anim_speed).sin() * 1.0, std::f32::consts::PI + (secs_elapsed * anim_speed).cos() * 3.0 / 2.0, 0.0].into(),
+                &[(secs_elapsed * ANIMATION_SPEED).sin() * 1.0, std::f32::consts::PI + (secs_elapsed * ANIMATION_SPEED).cos() * 3.0 / 2.0, 0.0].into(),
             );
 
             self.cmd(CommandKind::EntityTransformSet {
@@ -285,15 +287,15 @@ impl Mapp for ExampleMapp {
                     (model_selector, transform)
                 };
                 self.cmd(CommandKind::EntityParentSet {
-                    entity: entity,
+                    entity,
                     parent_entity: self.root_entity,
                 });
                 self.cmd(CommandKind::EntityModelSet {
-                    entity: entity,
+                    entity,
                     model: model_selector,
                 });
                 self.cmd(CommandKind::EntityTransformSet {
-                    entity: entity,
+                    entity,
                     transform: Some(transform),
                 });
             },
@@ -339,7 +341,7 @@ impl Mapp for ExampleMapp {
                     });
                     self.cmd(CommandKind::RayTrace {
                         origin: position,
-                        direction: direction,
+                        direction,
                     });
                 }
             },
@@ -362,7 +364,7 @@ impl Mapp for ExampleMapp {
                         });
 
                         self.ray_tracing_task = Some(RayTracingTask {
-                            direction: direction,
+                            direction,
                             total_distance,
                         });
                     } else {
