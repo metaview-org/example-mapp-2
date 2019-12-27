@@ -1,5 +1,8 @@
 use std::time::Duration;
 use std::collections::VecDeque;
+use include_dir::{include_dir, DirEntry};
+use regex::Regex;
+use lazy_static::lazy_static;
 use ammolite_math::*;
 use wasm_bindgen::prelude::*;
 use mlib::*;
@@ -57,25 +60,45 @@ macro_rules! dbg {
     };
 }
 
-// const MODEL_MAIN_BYTES: &'static [u8] = include_bytes!(env!("MODEL"));
-// const MODEL_MAIN_BYTES: &'static [u8] = include_bytes!("/home/limeth/Downloads/meteor-crater-arizona/source/Meteor Crater.glb");
-const MODEL_BUTTON_PREVIOUS_BYTES: &'static [u8] = include_bytes!("/home/limeth/Documents/School/mvr/metaview models/button_previous.glb");
-const MODEL_BUTTON_NEXT_BYTES: &'static [u8] = include_bytes!("/home/limeth/Documents/School/mvr/metaview models/button_next.glb");
-// TODO: Use a procedural macro to output include_bytes! macros for every model
-// in the resources directory (if a feature is used/release build; otherwise it
-// would slow down linting)
-const MODELS_MAIN_LEN: usize = 1;
-const MODELS_MAIN_BYTES_SCALE: [(&'static [u8], f32); MODELS_MAIN_LEN] = [
-    // (include_bytes!("../../ammolite/resources/DamagedHelmet/glTF-Binary/DamagedHelmet.glb"), 1.0),
-    // (include_bytes!("../../ammolite/resources/Corset/glTF-Binary/Corset.glb"), 40.0),
-    // (include_bytes!("../../ammolite/resources/AntiqueCamera/glTF-Binary/AntiqueCamera.glb"), 0.1),
-    (include_bytes!("../../ammolite/resources/WaterBottle/glTF-Binary/WaterBottle.glb"), 5.0),
-    // (include_bytes!("/home/limeth/Documents/School/mvr/team07/mvr_3D_models/hlusijak/laser/zaba.glb"), 0.01),
-];
-const MODEL_MARKER_BYTES: &'static [u8] = include_bytes!("../../ammolite/resources/sphere_1m_radius.glb");
 const SELECTION_DELAY: f32 = 1.0;
-const ANIMATION_SPEED: f32 = 0.0;
-const ENTITY_COUNT: usize = 20;
+const ANIMATION_SPEED: f32 = 0.2;
+const ENTITY_COUNT: usize = 3;
+
+const MODEL_BUTTON_PREVIOUS_BYTES: &'static [u8] = include_bytes!("../resources/ui/button_previous.glb");
+const MODEL_BUTTON_NEXT_BYTES: &'static [u8] = include_bytes!("../resources/ui/button_next.glb");
+const MODEL_MARKER_BYTES: &'static [u8] = include_bytes!("../resources/ui/sphere_1m_radius.glb");
+
+lazy_static! {
+    static ref MODELS_MAIN_BYTES_SCALE: Vec<(&'static [u8], f32)> = {
+        let dir = include_dir!("resources/showcase");
+        let files = dir.find("**/*_(*).glb")
+            .expect("Could not traverse the resource directory tree.")
+            .flat_map(|dir_entry| {
+                match dir_entry {
+                    DirEntry::File(file) => Some(file),
+                    DirEntry::Dir(_) => None,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if files.len() <= 0 {
+            panic!("No `.glb` glTF models in the `resources/showcase` directory.")
+        }
+
+        files.into_iter()
+            .map(|file| {
+                lazy_static! {
+                    static ref PATTERN: Regex = Regex::new(r"^(?P<name>.*)_\((?P<scale>.*?)\)$").unwrap();
+                }
+                let stem = file.path().file_stem().unwrap().to_str().unwrap();
+                let captures = PATTERN.captures(stem).unwrap();
+                let scale = captures.name("scale").unwrap().as_str().parse().unwrap();
+
+                (file.contents(), scale)
+            })
+            .collect::<Vec<_>>()
+    };
+}
 
 fn construct_model_matrix(scale: f32, translation: &Vec3, rotation: &Vec3) -> Mat4 {
     Mat4::translation(translation)
@@ -114,7 +137,7 @@ pub struct ExampleMapp {
     commands: VecDeque<Command>,
     view_orientations: Option<Vec<Option<Orientation>>>,
     root_entity: Option<Entity>,
-    models_main: [Option<Model>; MODELS_MAIN_LEN],
+    models_main: Vec<Option<Model>>,
     model_marker: Option<Model>,
     model_button_previous: Option<Model>,
     model_button_next: Option<Model>,
@@ -147,13 +170,13 @@ impl ExampleMapp {
     }
 
     fn change_main_model_next(&mut self) {
-        let new_index = (self.current_main_model_index + 1) % MODELS_MAIN_LEN;
+        let new_index = (self.current_main_model_index + 1) % MODELS_MAIN_BYTES_SCALE.len();
         self.change_main_model_index(new_index);
     }
 
     fn change_main_model_previous(&mut self) {
         let new_index = if self.current_main_model_index == 0 {
-            MODELS_MAIN_LEN - 1
+            MODELS_MAIN_BYTES_SCALE.len() - 1
         } else {
             self.current_main_model_index - 1
         };
@@ -171,7 +194,7 @@ impl Mapp for ExampleMapp {
             commands: VecDeque::new(),
             view_orientations: None,
             root_entity: None,
-            models_main: [None; MODELS_MAIN_LEN],
+            models_main: vec![None; MODELS_MAIN_BYTES_SCALE.len()],
             model_marker: None,
             model_button_previous: None,
             model_button_next: None,
@@ -184,7 +207,7 @@ impl Mapp for ExampleMapp {
             current_selection: None,
         };
         result.cmd(CommandKind::EntityRootGet);
-        for (model_bytes, _) in &MODELS_MAIN_BYTES_SCALE {
+        for (model_bytes, _) in &MODELS_MAIN_BYTES_SCALE[..] {
             result.cmd(CommandKind::ModelCreate {
                 data: model_bytes.into(),
             });
@@ -225,7 +248,7 @@ impl Mapp for ExampleMapp {
 
             let transform = construct_model_matrix(
                 MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1,
-                &[0.0, 0.0, 2.0 + 1.0 * index as f32].into(),
+                &[0.0, 0.0, 2.0 + 4.0 * index as f32].into(),
                 &[(secs_elapsed * ANIMATION_SPEED).sin() * 1.0, std::f32::consts::PI + (secs_elapsed * ANIMATION_SPEED).cos() * 3.0 / 2.0, 0.0].into(),
             );
 
