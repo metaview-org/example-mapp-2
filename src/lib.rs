@@ -239,8 +239,7 @@ impl Mapp for ExampleMapp {
         self.elapsed = elapsed;
 
         let secs_elapsed = duration_to_seconds(elapsed);
-        // dbg!(self, elapsed);
-        // dbg!(self, secs_elapsed);
+
         for (index, entity) in self.entities_main.clone().iter().enumerate() {
             if entity.is_none() {
                 return;
@@ -266,6 +265,7 @@ impl Mapp for ExampleMapp {
 
     fn receive_command_response(&mut self, response: CommandResponse) {
         // println!(self, "RECEIVED COMMAND RESPONSE: {:#?}", response);
+
         match response.kind {
             CommandResponseKind::EntityRootGet { root_entity } => {
                 self.root_entity = Some(root_entity);
@@ -323,8 +323,6 @@ impl Mapp for ExampleMapp {
                 });
             },
             CommandResponseKind::GetViewOrientation { views_per_medium } => {
-                // dbg!(self, &views_per_medium);
-
                 self.view_orientations = Some(views_per_medium.into_iter()
                     .map(|views|
                         views.map(|views| {
@@ -346,8 +344,6 @@ impl Mapp for ExampleMapp {
                             }
                         })
                     ).collect::<Vec<_>>());
-
-                // dbg!(self, &self.view_orientations);
 
                 let ray_trace_cmd = self.view_orientations.as_ref().and_then(|view_orientations| {
                     if let [Some(hmd), _] = &view_orientations[..] {
@@ -447,24 +443,4 @@ impl Mapp for ExampleMapp {
     fn flush_io(&mut self) -> IO {
         std::mem::replace(&mut self.io, Default::default())
     }
-
-    // fn get_model_matrices(&mut self, secs_elapsed: f32) -> Vec<Mat4> {
-    //     fn construct_model_matrix(scale: f32, translation: &Vec3, rotation: &Vec3) -> Mat4 {
-    //         Mat4::translation(translation)
-    //             * Mat4::rotation_roll(rotation[2])
-    //             * Mat4::rotation_yaw(rotation[1])
-    //             * Mat4::rotation_pitch(rotation[0])
-    //             * Mat4::scale(scale)
-    //     }
-
-    //     let matrix = construct_model_matrix(
-    //         1.0,
-    //         &[0.0, 0.0, 2.0].into(),
-    //         &[secs_elapsed.sin() * 0.0 * 1.0, std::f32::consts::PI + secs_elapsed.cos() * 0.0 * 3.0 / 2.0, 0.0].into(),
-    //     );
-
-    //     let matrices = vec![matrix];
-
-    //     matrices
-    // }
 }
