@@ -1,62 +1,110 @@
+use std::sync::Mutex;
 use std::time::Duration;
 use std::collections::VecDeque;
-use include_dir::{include_dir, DirEntry};
+use include_dir::{include_dir, DirEntry, FileSystem};
 use regex::Regex;
 use lazy_static::lazy_static;
 use ammolite_math::*;
 use wasm_bindgen::prelude::*;
 use mlib::*;
 
+#[derive(Default)]
+pub struct SyncIO {
+    out: Mutex<Vec<u8>>,
+    err: Mutex<Vec<u8>>,
+}
+
+impl SyncIO {
+    pub fn flush(&self) -> IO {
+        IO {
+            out: {
+                let mut mut_out = GLOBAL_IO.out.lock().expect("Could not lock the stdout.");
+                std::mem::replace(mut_out.as_mut(), Vec::new())
+            },
+            err: {
+                let mut mut_err = GLOBAL_IO.err.lock().expect("Could not lock the stderr.");
+                std::mem::replace(mut_err.as_mut(), Vec::new())
+            },
+        }
+    }
+
+    pub fn write_out<T: AsRef<[u8]>>(&self, bytes: impl IntoIterator<Item=T>) {
+        let mut mut_out = GLOBAL_IO.out.lock().expect("Could not lock the stdout.");
+
+        for item in bytes {
+            mut_out.extend(item.as_ref());
+        }
+    }
+
+    pub fn write_err<T: AsRef<[u8]>>(&self, bytes: impl IntoIterator<Item=T>) {
+        let mut mut_err = GLOBAL_IO.err.lock().expect("Could not lock the stderr.");
+
+        for item in bytes {
+            mut_err.extend(item.as_ref());
+        }
+    }
+}
+
+lazy_static! {
+    pub static ref GLOBAL_IO: SyncIO = Default::default();
+}
+
 #[allow(unused)]
 macro_rules! print {
-    ($mapp:ident, $($tt:tt)*) => {
+    ($($tt:tt)*) => {
         let formatted = format!($($tt)*);
-        $mapp.io.out.extend(formatted.as_bytes());
+        GLOBAL_IO.write_out(&[formatted.as_bytes()]);
     }
 }
 
 #[allow(unused)]
 macro_rules! println {
-    ($mapp:ident, $($tt:tt)*) => {
-        print!($mapp, $($tt)*);
-        $mapp.io.out.push('\n' as u8)
+    ($($tt:tt)*) => {
+        let formatted = format!($($tt)*);
+        GLOBAL_IO.write_out(&[
+            formatted.as_bytes(),
+            std::slice::from_ref(&('\n' as u8))
+        ]);
     }
 }
 
 #[allow(unused)]
 macro_rules! eprint {
-    ($mapp:ident, $($tt:tt)*) => {
+    ($($tt:tt)*) => {
         let formatted = format!($($tt)*);
-        $mapp.io.err.extend(formatted.as_bytes());
+        GLOBAL_IO.write_err(&[formatted.as_bytes()]);
     }
 }
 
 #[allow(unused)]
 macro_rules! eprintln {
-    ($mapp:ident, $($tt:tt)*) => {
-        eprint!($mapp, $($tt)*);
-        $mapp.io.err.push('\n' as u8)
+    ($($tt:tt)*) => {
+        let formatted = format!($($tt)*);
+        GLOBAL_IO.write_err(&[
+            formatted.as_bytes(),
+            std::slice::from_ref(&('\n' as u8))
+        ]);
     }
 }
 
 // Implementation from https://doc.rust-lang.org/std/macro.dbg.html
 #[allow(unused)]
 macro_rules! dbg {
-    ($mapp:ident, ) => {
-        eprintln!($mapp, "[{}:{}]", file!(), line!());
+    () => {
+        eprintln!("[{}:{}]", file!(), line!());
     };
-    ($mapp:ident, $val:expr) => {
+    ($val:expr) => {
         match $val {
             tmp => {
-                eprintln!($mapp, "[{}:{}] {} = {:#?}",
+                eprintln!("[{}:{}] {} = {:#?}",
                     file!(), line!(), stringify!($val), &tmp);
                 tmp
             }
         }
     };
-    ($mapp:ident, $val:expr,) => { dbg!($mapp, $val) };
-    ($mapp:ident, $($val:expr),+ $(,)?) => {
-        ($(dbg!($mapp, $val)),+,)
+    ($val:expr,) => { dbg!($val) };
+    ($($val:expr),+ $(,)?) => {
+        ($(dbg!($val)),+,)
     };
 }
 
@@ -68,10 +116,11 @@ const MODEL_BUTTON_PREVIOUS_BYTES: &'static [u8] = include_bytes!("../resources/
 const MODEL_BUTTON_NEXT_BYTES: &'static [u8] = include_bytes!("../resources/ui/button_next.glb");
 const MODEL_MARKER_BYTES: &'static [u8] = include_bytes!("../resources/ui/sphere_1m_radius.glb");
 
+const DIR: FileSystem = include_dir!("resources/showcase");
+
 lazy_static! {
     static ref MODELS_MAIN_BYTES_SCALE: Vec<(&'static [u8], f32)> = {
-        let dir = include_dir!("resources/showcase");
-        let files = dir.find("**/*_(*).glb")
+        let files = DIR.find("**/*_(*).glb")
             .expect("Could not traverse the resource directory tree.")
             .flat_map(|dir_entry| {
                 match dir_entry {
@@ -85,14 +134,19 @@ lazy_static! {
             panic!("No `.glb` glTF models in the `resources/showcase` directory.")
         }
 
+        println!("Packaged showcase models:");
+
         files.into_iter()
-            .map(|file| {
+            .enumerate()
+            .map(|(index, file)| {
                 lazy_static! {
                     static ref PATTERN: Regex = Regex::new(r"^(?P<name>.*)_\((?P<scale>.*?)\)$").unwrap();
                 }
                 let stem = file.path().file_stem().unwrap().to_str().unwrap();
                 let captures = PATTERN.captures(stem).unwrap();
                 let scale = captures.name("scale").unwrap().as_str().parse().unwrap();
+
+                println!("Model #{}: {:?}", index, file.path());
 
                 (file.contents(), scale)
             })
@@ -131,7 +185,6 @@ pub struct Selection {
 #[mapp]
 pub struct ExampleMapp {
     elapsed: Duration,
-    io: IO,
     state: Vec<String>,
     command_id_next: usize,
     commands: VecDeque<Command>,
@@ -188,7 +241,6 @@ impl Mapp for ExampleMapp {
     fn new() -> Self {
         let mut result = Self {
             elapsed: Default::default(),
-            io: Default::default(),
             state: Vec::new(),
             command_id_next: 0,
             commands: VecDeque::new(),
@@ -346,7 +398,9 @@ impl Mapp for ExampleMapp {
                     ).collect::<Vec<_>>());
 
                 let ray_trace_cmd = self.view_orientations.as_ref().and_then(|view_orientations| {
-                    if let [Some(hmd), _] = &view_orientations[..] {
+                    if let [Some(any)] = &view_orientations[..] {
+                        Some((any.position.clone(), any.direction.clone()))
+                    } else if let [Some(hmd), _] = &view_orientations[..] {
                         Some((hmd.position.clone(), hmd.direction.clone()))
                     } else {
                         None
@@ -441,6 +495,6 @@ impl Mapp for ExampleMapp {
     }
 
     fn flush_io(&mut self) -> IO {
-        std::mem::replace(&mut self.io, Default::default())
+        GLOBAL_IO.flush()
     }
 }
