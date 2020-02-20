@@ -119,6 +119,7 @@ const MODEL_MARKER_BYTES: &'static [u8] = include_bytes!("../resources/ui/sphere
 const DIR: FileSystem = include_dir!("resources/showcase");
 
 lazy_static! {
+    static ref GLOBAL_TRANSFORMATION: Mat4 = Mat4::rotation_yaw(0.0 * std::f32::consts::PI);
     static ref MODELS_MAIN_BYTES_SCALE: Vec<(&'static [u8], f32)> = {
         let files = DIR.find("**/*_(*).glb")
             .expect("Could not traverse the resource directory tree.")
@@ -185,7 +186,6 @@ pub struct Selection {
 #[mapp]
 pub struct ExampleMapp {
     elapsed: Duration,
-    state: Vec<String>,
     command_id_next: usize,
     commands: VecDeque<Command>,
     view_orientations: Option<Vec<Option<Orientation>>>,
@@ -241,7 +241,6 @@ impl Mapp for ExampleMapp {
     fn new() -> Self {
         let mut result = Self {
             elapsed: Default::default(),
-            state: Vec::new(),
             command_id_next: 0,
             commands: VecDeque::new(),
             view_orientations: None,
@@ -282,11 +281,6 @@ impl Mapp for ExampleMapp {
         result
     }
 
-    fn test(&mut self, arg: String) -> Vec<String> {
-        self.state.push(arg);
-        self.state.clone()
-    }
-
     fn update(&mut self, elapsed: Duration) {
         self.elapsed = elapsed;
 
@@ -305,7 +299,7 @@ impl Mapp for ExampleMapp {
 
             self.cmd(CommandKind::EntityTransformSet {
                 entity: entity.unwrap(),
-                transform: Some(transform),
+                transform: Some(&*GLOBAL_TRANSFORMATION * transform),
             });
         }
         self.cmd(CommandKind::GetViewOrientation {});
@@ -371,7 +365,7 @@ impl Mapp for ExampleMapp {
                 });
                 self.cmd(CommandKind::EntityTransformSet {
                     entity,
-                    transform: Some(transform),
+                    transform: Some(&*GLOBAL_TRANSFORMATION * transform),
                 });
             },
             CommandResponseKind::GetViewOrientation { views_per_medium } => {
@@ -453,7 +447,7 @@ impl Mapp for ExampleMapp {
                         });
                         self.cmd(CommandKind::EntityTransformSet {
                             entity: self.entity_marker.unwrap(),
-                            transform: Some(transform),
+                            transform: Some(&*GLOBAL_TRANSFORMATION * transform),
                         });
 
                         self.ray_tracing_task = None;
@@ -492,6 +486,10 @@ impl Mapp for ExampleMapp {
             }
             _ => (),
         }
+    }
+
+    fn receive_event(&mut self, event: Event) {
+        dbg!(event);
     }
 
     fn flush_io(&mut self) -> IO {
