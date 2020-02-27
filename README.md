@@ -1,5 +1,7 @@
 An example `metaview` app.
 
+This application demonstrates the ability to move entities around via input events and view orientation.
+
 Prerequisites:
 * [https://rustwasm.github.io/wasm-pack/](wasm-pack): A tool for compiling Rust to WASM
 

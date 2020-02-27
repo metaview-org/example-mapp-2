@@ -109,11 +109,8 @@ macro_rules! dbg {
 }
 
 const SELECTION_DELAY: f32 = 1.0;
-const ANIMATION_SPEED: f32 = 0.2;
-const ENTITY_COUNT: usize = 3;
+const ANIMATION_SPEED: f32 = 0.0;
 
-const MODEL_BUTTON_PREVIOUS_BYTES: &'static [u8] = include_bytes!("../resources/ui/button_previous.glb");
-const MODEL_BUTTON_NEXT_BYTES: &'static [u8] = include_bytes!("../resources/ui/button_next.glb");
 const MODEL_MARKER_BYTES: &'static [u8] = include_bytes!("../resources/ui/sphere_1m_radius.glb");
 
 const DIR: FileSystem = include_dir!("resources/showcase");
@@ -167,20 +164,21 @@ fn duration_to_seconds(duration: Duration) -> f32 {
     (duration.as_secs() as f64 + duration.subsec_nanos() as f64 / 1_000_000_000f64) as f32
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Orientation {
     direction: Vec3,
     position: Vec3,
 }
 
 pub struct RayTracingTask {
+    transform: Mat4,
     direction: Vec3,
     total_distance: f32,
 }
 
-pub struct Selection {
+pub struct Grab {
     entity: Entity,
-    since: Duration,
+    original_transform: Mat4,
 }
 
 #[mapp]
@@ -188,19 +186,17 @@ pub struct ExampleMapp {
     elapsed: Duration,
     command_id_next: usize,
     commands: VecDeque<Command>,
-    view_orientations: Option<Vec<Option<Orientation>>>,
+    view_orientations: Option<Vec<Option<(Mat4, Orientation)>>>,
+    primary_view_orientation: Option<(Mat4, Orientation)>,
     root_entity: Option<Entity>,
     models_main: Vec<Option<Model>>,
     model_marker: Option<Model>,
-    model_button_previous: Option<Model>,
-    model_button_next: Option<Model>,
-    entities_main: [Option<Entity>; ENTITY_COUNT],
+    entities_main: Vec<Option<Entity>>,
+    transforms_main: Vec<Option<Mat4>>,
     entity_marker: Option<Entity>,
-    entity_button_previous: Option<Entity>,
-    entity_button_next: Option<Entity>,
     ray_tracing_task: Option<RayTracingTask>,
-    current_main_model_index: usize,
-    current_selection: Option<Selection>,
+    grabbed_entity: Option<Grab>,
+    grab_entity: bool,
 }
 
 impl ExampleMapp {
@@ -211,30 +207,6 @@ impl ExampleMapp {
         });
         self.command_id_next += 1;
     }
-
-    fn change_main_model_index(&mut self, new_index: usize) {
-        self.current_main_model_index = new_index;
-        for entity in self.entities_main.clone().iter() {
-            self.cmd(CommandKind::EntityModelSet {
-                entity: entity.unwrap(),
-                model: self.models_main[self.current_main_model_index],
-            });
-        }
-    }
-
-    fn change_main_model_next(&mut self) {
-        let new_index = (self.current_main_model_index + 1) % MODELS_MAIN_BYTES_SCALE.len();
-        self.change_main_model_index(new_index);
-    }
-
-    fn change_main_model_previous(&mut self) {
-        let new_index = if self.current_main_model_index == 0 {
-            MODELS_MAIN_BYTES_SCALE.len() - 1
-        } else {
-            self.current_main_model_index - 1
-        };
-        self.change_main_model_index(new_index);
-    }
 }
 
 impl Mapp for ExampleMapp {
@@ -244,20 +216,20 @@ impl Mapp for ExampleMapp {
             command_id_next: 0,
             commands: VecDeque::new(),
             view_orientations: None,
+            primary_view_orientation: None,
             root_entity: None,
             models_main: vec![None; MODELS_MAIN_BYTES_SCALE.len()],
             model_marker: None,
-            model_button_previous: None,
-            model_button_next: None,
-            entities_main: [None; ENTITY_COUNT],
+            entities_main: vec![None; MODELS_MAIN_BYTES_SCALE.len()],
+            transforms_main: vec![None; MODELS_MAIN_BYTES_SCALE.len()],
             entity_marker: None,
-            entity_button_previous: None,
-            entity_button_next: None,
             ray_tracing_task: None,
-            current_main_model_index: 0,
-            current_selection: None,
+            grabbed_entity: None,
+            grab_entity: false,
         };
         result.cmd(CommandKind::EntityRootGet);
+
+        // Load models
         for (model_bytes, _) in &MODELS_MAIN_BYTES_SCALE[..] {
             result.cmd(CommandKind::ModelCreate {
                 data: model_bytes.into(),
@@ -266,39 +238,38 @@ impl Mapp for ExampleMapp {
         result.cmd(CommandKind::ModelCreate {
             data: (&MODEL_MARKER_BYTES[..]).into(),
         });
-        result.cmd(CommandKind::ModelCreate {
-            data: (&MODEL_BUTTON_PREVIOUS_BYTES[..]).into(),
-        });
-        result.cmd(CommandKind::ModelCreate {
-            data: (&MODEL_BUTTON_NEXT_BYTES[..]).into(),
-        });
-        for _ in 0..ENTITY_COUNT {
+
+        // Create entities
+        for _ in 0..MODELS_MAIN_BYTES_SCALE.len() {
             result.cmd(CommandKind::EntityCreate);
         }
         result.cmd(CommandKind::EntityCreate);
-        result.cmd(CommandKind::EntityCreate);
-        result.cmd(CommandKind::EntityCreate);
+
         result
     }
 
     fn update(&mut self, elapsed: Duration) {
         self.elapsed = elapsed;
 
-        let secs_elapsed = duration_to_seconds(elapsed);
-
         for (index, entity) in self.entities_main.clone().iter().enumerate() {
             if entity.is_none() {
                 return;
             }
 
-            let transform = construct_model_matrix(
-                MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1,
-                &[0.0, 0.0, 2.0 + 4.0 * index as f32].into(),
-                &[(secs_elapsed * ANIMATION_SPEED).sin() * 1.0, std::f32::consts::PI + (secs_elapsed * ANIMATION_SPEED).cos() * 3.0 / 2.0, 0.0].into(),
-            );
+            let entity = entity.as_ref().unwrap();
+            let mut transform = self.transforms_main[index].as_ref().unwrap().clone();
+
+            if self.grabbed_entity.is_some() && self.grabbed_entity.as_ref().unwrap().entity == *entity {
+                let Grab {
+                    entity,
+                    original_transform,
+                } = self.grabbed_entity.as_ref().unwrap();
+                let current_transform = self.primary_view_orientation.as_ref().unwrap().0.clone();
+                transform = current_transform * original_transform.inverse() * transform;
+            }
 
             self.cmd(CommandKind::EntityTransformSet {
-                entity: entity.unwrap(),
+                entity: *entity,
                 transform: Some(&*GLOBAL_TRANSFORMATION * transform),
             });
         }
@@ -321,10 +292,6 @@ impl Mapp for ExampleMapp {
                     model_main
                 } else if self.model_marker.is_none() {
                     &mut self.model_marker
-                } else if self.model_button_previous.is_none() {
-                    &mut self.model_button_previous
-                } else if self.model_button_next.is_none() {
-                    &mut self.model_button_next
                 } else {
                     panic!("Too many ModelCreate commands sent.");
                 };
@@ -332,29 +299,26 @@ impl Mapp for ExampleMapp {
                 *model_ref = Some(model);
             },
             CommandResponseKind::EntityCreate { entity } => {
-                let (model_selector, transform) = {
-                    let (entity_selector, model_selector, transform) = if let Some(index) = self.entities_main.iter().position(|entity| entity.is_none()) {
-                        (&mut self.entities_main[index], self.models_main[self.current_main_model_index], Mat4::scale(MODELS_MAIN_BYTES_SCALE[self.current_main_model_index].1))
+                let (model_selector, transform_selector, transform) = {
+                    let (entity_selector, transform_selector, model_selector, transform) = if let Some(index) = self.entities_main.iter().position(|entity| entity.is_none()) {
+                        (
+                            &mut self.entities_main[index],
+                            Some(&mut self.transforms_main[index]),
+                            self.models_main[index],
+                            Mat4::translation(&[0.0, 0.0, 2.0 + 4.0 * index as f32].into())
+                            * Mat4::scale(MODELS_MAIN_BYTES_SCALE[index].1)
+                        )
                     } else if self.entity_marker.is_none() {
-                        (&mut self.entity_marker, self.model_marker, Mat4::IDENTITY)
-                    } else if self.entity_button_previous.is_none() {
-                        (
-                            &mut self.entity_button_previous,
-                            self.model_button_previous,
-                            construct_model_matrix(0.2, &Vec3([ 1.0, 0.0, 1.0]), &Vec3([0.0, std::f32::consts::PI, 0.0])),
-                        )
-                    } else if self.entity_button_next.is_none() {
-                        (
-                            &mut self.entity_button_next,
-                            self.model_button_next,
-                            construct_model_matrix(0.2, &Vec3([-1.0, 0.0, 1.0]), &Vec3([0.0, std::f32::consts::PI, 0.0])),
-                        )
+                        (&mut self.entity_marker, None, self.model_marker, Mat4::IDENTITY)
                     } else {
                         panic!("Too many EntityCreate commands sent.");
                     };
                     *entity_selector = Some(entity);
-                    (model_selector, transform)
+                    (model_selector, transform_selector, transform)
                 };
+                if let Some(transform_selector) = transform_selector {
+                    *transform_selector = Some(transform.clone());
+                }
                 self.cmd(CommandKind::EntityParentSet {
                     entity,
                     parent_entity: self.root_entity,
@@ -383,26 +347,41 @@ impl Mapp for ExampleMapp {
                             average_view
                         })
                         .map(|average_view| {
-                            Orientation {
-                                // Investigate why -z is needed instead of +z
-                                direction: (&average_view * Vec4([0.0, 0.0, -1.0, 0.0])).into_projected(),
-                                position:  (&average_view * Vec4([0.0, 0.0, 0.0, 1.0])).into_projected(),
-                            }
+                            (
+                                average_view.clone(),
+                                Orientation {
+                                    // Investigate why -z is needed instead of +z
+                                    direction: (&average_view * Vec4([0.0, 0.0, -1.0, 0.0])).into_projected(),
+                                    position:  (&average_view * Vec4([0.0, 0.0, 0.0, 1.0])).into_projected(),
+                                },
+                            )
                         })
                     ).collect::<Vec<_>>());
 
-                let ray_trace_cmd = self.view_orientations.as_ref().and_then(|view_orientations| {
-                    if let [Some(any)] = &view_orientations[..] {
-                        Some((any.position.clone(), any.direction.clone()))
-                    } else if let [Some(hmd), _] = &view_orientations[..] {
-                        Some((hmd.position.clone(), hmd.direction.clone()))
+                self.primary_view_orientation = self.view_orientations.as_ref().and_then(|view_orientations| {
+                    if let [Some((transform, orientation))] = &view_orientations[..] {
+                        Some((transform.clone(), orientation.clone()))
+                    // HMD:
+                    } else if let [Some((transform, orientation)), _] = &view_orientations[..] {
+                        Some((transform.clone(), orientation.clone()))
                     } else {
                         None
                     }
                 });
 
-                if let Some((position, direction)) = ray_trace_cmd {
+                let ray_trace_cmd = self.view_orientations.as_ref().and_then(|view_orientations| {
+                    if let [Some((transform, any))] = &view_orientations[..] {
+                        Some((transform, any.position.clone(), any.direction.clone()))
+                    } else if let [Some((transform, hmd)), _] = &view_orientations[..] {
+                        Some((transform, hmd.position.clone(), hmd.direction.clone()))
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some((transform, position, direction)) = ray_trace_cmd {
                     self.ray_tracing_task = Some(RayTracingTask {
+                        transform: transform.clone(),
                         direction: direction.clone(),
                         total_distance: 0.0,
                     });
@@ -417,6 +396,7 @@ impl Mapp for ExampleMapp {
 
                 if let Some(closest_intersection) = closest_intersection {
                     let RayTracingTask {
+                        transform: ray_tracing_transform,
                         direction,
                         total_distance,
                     } = self.ray_tracing_task.take().unwrap();
@@ -431,15 +411,13 @@ impl Mapp for ExampleMapp {
                         });
 
                         self.ray_tracing_task = Some(RayTracingTask {
+                            transform: ray_tracing_transform,
                             direction,
                             total_distance,
                         });
                     } else {
-                        let scale = 0.02 * total_distance * self.current_selection.as_ref().map(|selection| {
-                            1.0 + duration_to_seconds(self.elapsed - selection.since)
-                        }).unwrap_or(1.0);
                         let transform = Mat4::translation(&closest_intersection.position)
-                            * Mat4::scale(scale);
+                            * Mat4::scale(0.02 * total_distance);
 
                         self.cmd(CommandKind::EntityModelSet {
                             entity: self.entity_marker.unwrap(),
@@ -452,32 +430,14 @@ impl Mapp for ExampleMapp {
 
                         self.ray_tracing_task = None;
 
-                        if Some(closest_intersection.entity) == self.entity_button_previous
-                            || Some(closest_intersection.entity) == self.entity_button_next {
-                            if self.current_selection.is_none() {
-                                self.current_selection = Some(Selection {
-                                    entity: closest_intersection.entity,
-                                    since: self.elapsed,
-                                })
-                            }
-                        }
-
-                        if self.current_selection.as_ref().map(|selection| selection.entity) == Some(closest_intersection.entity) {
-                            if self.elapsed - self.current_selection.as_ref().unwrap().since >= Duration::from_secs_f32(SELECTION_DELAY) {
-                                if Some(closest_intersection.entity) == self.entity_button_previous {
-                                    self.change_main_model_previous();
-                                } else if Some(closest_intersection.entity) == self.entity_button_next {
-                                    self.change_main_model_next();
-                                }
-
-                                self.current_selection = None;
-                            }
-                        } else {
-                            self.current_selection = None;
+                        if self.grab_entity && self.grabbed_entity.is_none() {
+                            self.grabbed_entity = Some(Grab {
+                                entity: closest_intersection.entity,
+                                original_transform: ray_tracing_transform.clone(),
+                            });
                         }
                     }
                 } else {
-                    self.current_selection = None;
                     self.cmd(CommandKind::EntityModelSet {
                         entity: self.entity_marker.unwrap(),
                         model: None,
@@ -489,7 +449,46 @@ impl Mapp for ExampleMapp {
     }
 
     fn receive_event(&mut self, event: Event) {
-        dbg!(event);
+        match event {
+            mlib::Event::Window(
+                mlib::event::WindowEvent::MouseInput {
+                    button: mlib::event::MouseButton::Left,
+                    state,
+                    ..
+                }
+            ) => {
+                match state {
+                    mlib::event::ElementState::Pressed => {
+                        println!("Grab initiated.");
+                        self.grab_entity = true;
+                    },
+                    mlib::event::ElementState::Released => {
+                        println!("Grab ended.");
+                        self.grab_entity = false;
+
+                        if let Some(grabbed_entity) = &self.grabbed_entity {
+                            let Grab {
+                                entity: _,
+                                original_transform,
+                            } = self.grabbed_entity.as_ref().unwrap();
+                            let entity_index = self.entities_main.iter().enumerate()
+                                .find(|(_, entity)| entity == &&Some(grabbed_entity.entity))
+                                .map(|(index, _)| index)
+                                .unwrap();
+
+                            let current_transform = self.primary_view_orientation.as_ref().unwrap().0.clone();
+                            self.transforms_main[entity_index] =
+                                Some(current_transform
+                                    * original_transform.inverse()
+                                    * self.transforms_main[entity_index].as_ref().unwrap());
+                        }
+
+                        self.grabbed_entity = None;
+                    },
+                }
+            },
+            _ => (),
+        }
     }
 
     fn flush_io(&mut self) -> IO {
