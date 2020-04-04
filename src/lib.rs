@@ -6,7 +6,7 @@ use regex::Regex;
 use lazy_static::lazy_static;
 use ammolite_math::*;
 use wasm_bindgen::prelude::*;
-use mlib::*;
+use ::mlib::*;
 
 #[derive(Default)]
 pub struct SyncIO {
